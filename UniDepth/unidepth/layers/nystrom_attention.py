@@ -4,9 +4,36 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from xformers.components.attention import NystromAttention
 
 from .attention import AttentionBlock
+
+
+class _FullAttentionFallback(nn.Module):
+    """Drop-in replacement for xformers.components.attention.NystromAttention.
+
+    Modern xformers removed the `components` module (the old experimental
+    attention zoo, including NystromAttention). Nystrom attention is a
+    linear-time approximation of full softmax attention, so plain
+    scaled_dot_product_attention is a correct (if not asymptotically as
+    cheap) substitute for inference on modest sequence lengths.
+    """
+
+    def __init__(self, num_landmarks: int, num_heads: int, dropout: float = 0.0):
+        del num_landmarks, num_heads
+        super().__init__()
+        self.dropout = dropout
+
+    def forward(self, q, k, v, key_padding_mask=None):
+        if key_padding_mask is not None:
+            raise NotImplementedError(
+                "key_padding_mask is not supported by the full-attention fallback"
+            )
+        # q, k, v: (b, n, h, d) -> (b, h, n, d)
+        q, k, v = (t.transpose(1, 2) for t in (q, k, v))
+        out = F.scaled_dot_product_attention(
+            q, k, v, dropout_p=self.dropout if self.training else 0.0
+        )
+        return out.transpose(1, 2)
 
 
 class NystromBlock(AttentionBlock):
@@ -31,9 +58,16 @@ class NystromBlock(AttentionBlock):
             layer_scale=layer_scale,
             context_dim=context_dim,
         )
-        self.attention_fn = NystromAttention(
-            num_landmarks=128, num_heads=num_heads, dropout=dropout
-        )
+        try:
+            from xformers.components.attention import NystromAttention
+
+            self.attention_fn = NystromAttention(
+                num_landmarks=128, num_heads=num_heads, dropout=dropout
+            )
+        except ImportError:
+            self.attention_fn = _FullAttentionFallback(
+                num_landmarks=128, num_heads=num_heads, dropout=dropout
+            )
 
     def attn(
         self,

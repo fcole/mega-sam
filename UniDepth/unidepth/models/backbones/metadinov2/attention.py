@@ -9,6 +9,7 @@
 #   https://github.com/rwightman/pytorch-image-models/tree/master/timm/models/vision_transformer.py
 
 import logging
+import os
 
 import torch.nn as nn
 from torch import Tensor
@@ -16,7 +17,10 @@ from torch import Tensor
 logger = logging.getLogger("dinov2")
 
 
+XFORMERS_ENABLED = os.environ.get("XFORMERS_DISABLED") is None
 try:
+    if not XFORMERS_ENABLED:
+        raise ImportError
     from xformers.ops import fmha, memory_efficient_attention, unbind
 
     XFORMERS_AVAILABLE = True
